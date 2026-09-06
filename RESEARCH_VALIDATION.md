@@ -1,0 +1,7 @@
+# Locality validation
+
+The locality module retains its historical angle names: beta_angle is COST and gamma_angle is MIXER, the reverse of the QAOA class. Angles are chronological and Heisenberg conjugation traverses layers backwards. Random and dense helpers now agree in sign and layer order. The random helper accepts seed and caps the number of terms by the number of available locality strings. Qiskit binary lists use the rightmost tensor factor for qubit zero. XI counting retains unrounded complex coefficients, applies the requested tolerance directly, and returns count zero for the empty expansion. Its maximum and average locality are then zero by convention.
+
+Notebook copies of the counter now call the tested module; dependent outputs were cleared. The old elementwise-exponential helper in QAOA_locality(ver1).ipynb also delegates to the corrected implementation. Saved optimization successes give upper bounds on attainable depth for those instances, not minimum-depth theorems; unsuccessful finite optimization runs provide no lower bound. These notebooks remain exploratory outside the regression-tested paths.
+
+Run `python -m pip install -r requirements-test.txt` then `python -m pytest tests -q`. The regression suite checks small/empty/complex coefficients, independent dense Heisenberg evolution, consistent random construction, deterministic seeds, and zero-term Hamiltonians.
