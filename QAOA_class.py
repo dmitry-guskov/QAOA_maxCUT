@@ -10,7 +10,13 @@ class QAOA:
     def __init__(self,depth,H):             # Class initialization. Arguments are "depth", 
                                             # and a Diagonal Hamiltonian,"H".    
         
-        self.H = H
+        diagonal = np.asarray(H)
+        if (diagonal.ndim != 1 or len(diagonal) < 2 or len(diagonal) & (len(diagonal)-1)
+                or not np.isrealobj(diagonal) or not np.isfinite(diagonal).all()):
+            raise ValueError('Expected a finite real power-of-two diagonal.')
+        if not isinstance(depth,(int,np.integer)) or depth < 1:
+            raise ValueError('Expected a positive integer depth.')
+        self.H = diagonal.astype(float,copy=True)
         self.n = int(np.log2(int(len(self.H)))) # Calculates the number of qubits. 
         
         #______________________________________________________________________________________________________
@@ -35,44 +41,18 @@ class QAOA:
                     # in terms of permutation indices.
     
     def new_mixerX(self):
-        def split(x,k):
-            return x.reshape((2**k,-1))
-        def sym_swap(x):
-            return np.asarray([x[-1],x[-2],x[1],x[0]])
-        
-        n = self.n
-        x_list = []
-        t1 = np.asarray([np.arange(2**(n-1),2**n),np.arange(0,2**(n-1))])
-        t1 = t1.flatten()
-        x_list.append(t1.flatten())
-        t2 = t1.reshape(4,-1)
-        t3 = sym_swap(t2)
-        t1 = t3.flatten()
-        x_list.append(t1)
-        
-        
-        k = 1
-        while k < (n-1):
-            t2 = split(t1,k)
-            t2 = np.asarray(t2)
-            t1=[]
-            for y in t2:
-                t3 = y.reshape((4,-1))
-                t4 = sym_swap(t3)
-                t1.append(t4.flatten())
-            t1 = np.asarray(t1)
-            t1 = t1.flatten()
-            x_list.append(t1)
-            k+=1        
-        
-        return x_list
+        """Single-qubit X indices, qubit zero most significant."""
+        indices = np.arange(2**self.n)
+        return [indices ^ (1 << (self.n-1-q)) for q in range(self.n)]
     #__________________________________________________________________________________________________________   
         
         
     def U_gamma(self,angle,state):       # applies exp{-i\gamma H_z}, here as "U_gamma", on a "state".
         
         t = -1j*angle
-        state = state*np.exp(t*self.H.reshape(2**self.n,1))
+        state = np.asarray(state)
+        phase = np.exp(t*self.H)
+        state = state * (phase if state.ndim == 1 else phase[:, None])
         
         return state
             
@@ -98,7 +78,9 @@ class QAOA:
     def qaoa_ansatz(self, angles):
         
         state = np.ones((2**self.n,1),dtype = 'complex128')*(1/np.sqrt(2**self.n))
-        p = int(len(angles)/2)
+        if len(angles) % 2:
+            raise ValueError("Expected complete gamma/beta angle pairs.")
+        p = len(angles)//2
         for i in range(p):
             state = self.U_gamma(angles[i],state)
             state = self.V_beta(angles[p + i],state)
@@ -109,7 +91,9 @@ class QAOA:
     
     
     def apply_ansatz(self, angles,state):
-        p = int(len(angles)/2)
+        if len(angles) % 2:
+            raise ValueError("Expected complete gamma/beta angle pairs.")
+        p = len(angles)//2
         for i in range(p):
             state = self.U_gamma(angles[i],state)
             state = self.V_beta(angles[p + i],state)
@@ -162,22 +146,23 @@ class QAOA:
                     #    ground state overlap, here as "olap"
                     #    and also the optimal state, here as "f_state" 
     
-    def run_RI(self):
+    def run_RI(self, *, seed=None):
+        rng = random if seed is None else random.Random(seed)
         t_start = time.time()
         initial_angles=[]
         bds= [(0,2*np.pi)]*self.p + [(0,1*np.pi)]*self.p
         for i in range(2*self.p):
             if i < self.p:
-                initial_angles.append(random.uniform(0,2*np.pi))
+                initial_angles.append(rng.uniform(0,2*np.pi))
             else:
-                initial_angles.append(random.uniform(0,np.pi))
+                initial_angles.append(rng.uniform(0,np.pi))
             
         res = minimize(self.expectation,initial_angles,method='L-BFGS-B',                        jac=None, bounds=bds, options={'maxfun': 150000})
         
         t_end = time.time()
         self.opt_angles = res.x
         self.exe_time = float(t_end - t_start)
-        self.opt_iter = float(res.nfev)
+        self.opt_iter = int(res.nfev)+1
         self.q_energy = self.expectation(res.x)
         self.q_error = self.q_energy - self.min
         self.f_state = self.qaoa_ansatz(res.x)
@@ -188,9 +173,14 @@ class QAOA:
         
      #__________________________________________________________________________________________________________
         
-    def run_heuristic_LW(self):
+    def run_heuristic_LW(self, *, seed=None):
+        rng = random if seed is None else random.Random(seed)
+        if any(not isinstance(v,(int,np.integer)) or v < 1
+               for v in (self.heruistic_LW_seed1,self.heruistic_LW_seed2)):
+            raise ValueError('Expected positive restart counts.')
+        total_nfev = 0
         
-        initial_guess = lambda x: ([random.uniform(0,2*np.pi) for _ in range(x) ] +                                    [random.uniform(0,np.pi) for _ in range(x)])
+        initial_guess = lambda x: ([rng.uniform(0,2*np.pi) for _ in range(x) ] +                                    [rng.uniform(0,np.pi) for _ in range(x)])
         bds = lambda x: [(0.1,2*np.pi)]*x + [(0.1,1*np.pi)]*x
         
         def combine(a,b):
@@ -214,7 +204,8 @@ class QAOA:
         for _ in range(self.heruistic_LW_seed1):
             initial_guess_p1 = initial_guess(1)
             res = minimize(self.expectation,initial_guess_p1,method='L-BFGS-B',                           jac=None, bounds=bds(1), options={'maxfun': 150000})
-            temp.append([self.expectation(res.x),initial_guess_p1])
+            total_nfev += res.nfev
+            temp.append([res.fun, res.x.copy()])
             
         temp = np.asarray(temp,dtype=object)
         idx = np.argmin(temp[:,0])
@@ -229,12 +220,15 @@ class QAOA:
             t_state = self.qaoa_ansatz(opt_angles)
             
             
-            ex = lambda x : np.real(np.vdot(self.apply_ansatz(x,t_state),                                            self.apply_ansatz(x,t_state)*(self.H).reshape((2**self.n,1))))
+            def ex(x):
+                evolved = self.apply_ansatz(x,t_state)
+                return float(np.vdot(evolved,evolved*self.H[:,None]).real)
             temp = [] 
             
             for _ in range(self.heruistic_LW_seed2):
                 
                 res = minimize(ex,initial_guess(1),method='L-BFGS-B', jac=None, bounds=bds(1),                                options={'maxfun': 150000})
+                total_nfev += res.nfev
                 temp.append([res.fun, res.x])
             temp = np.asarray(temp,dtype=object)
             idx = np.argmin(temp[:,0])
@@ -244,6 +238,7 @@ class QAOA:
 
             
             res = minimize(self.expectation,opt_angles,method='L-BFGS-B', jac=None,                            bounds=bds(int(len(opt_angles)/2)), options={'maxfun': 150000})    
+            total_nfev += res.nfev
             opt_angles = res.x
         self.opt_angles = opt_angles    
        
@@ -252,7 +247,7 @@ class QAOA:
             
         t_end = time.time()
         self.exe_time = float(t_end - t_start)
-        self.opt_iter = float(res.nfev)
+        self.opt_iter = int(total_nfev)+1
         self.q_energy = self.expectation(self.opt_angles)
         self.q_error = self.q_energy - self.min
         self.f_state = self.qaoa_ansatz(self.opt_angles)
